@@ -82,6 +82,7 @@ exec /usr/bin/open \
   -n \
   -W \
   --env OMARCHY_QEMU_GPU_DEVELOPMENT_MULTI_DISK=1 \
+  ${TRY_OMARCHY_BRIDGE_MODE:+--env TRY_OMARCHY_BRIDGE_MODE=$TRY_OMARCHY_BRIDGE_MODE} \
   --stdin /dev/null \
   --stdout /dev/null \
   --stderr /dev/null \
