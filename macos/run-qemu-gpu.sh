@@ -123,9 +123,15 @@ printf '%s\n' "$qemu_help" | grep -Fq 'immersive=on|off' || {
 qemu_netdevs=$("$qemu_bin" -machine virt -netdev help 2>&1) || {
   fail "cannot inspect staged QEMU network backends"
 }
-printf '%s\n' "$qemu_netdevs" | grep -qx 'user' || {
-  fail "staged QEMU does not provide no-root SLIRP networking; run make runtime"
-}
+if [[ -n ${TRY_OMARCHY_BRIDGE_MODE:-} ]]; then
+  printf '%s\n' "$qemu_netdevs" | grep -qx 'socket' || {
+    fail "staged QEMU does not provide socket networking for the vmnet bridge; run make runtime"
+  }
+else
+  printf '%s\n' "$qemu_netdevs" | grep -qx 'user' || {
+    fail "staged QEMU does not provide no-root SLIRP networking; run make runtime"
+  }
+fi
 qemu_audiodevs=$("$qemu_bin" -machine virt -audiodev help 2>&1) || {
   fail "cannot inspect staged QEMU audio backends"
 }
@@ -835,6 +841,16 @@ if ! qemu_port_forwarding_configure "${OMARCHY_QEMU_GPU_PORT_FORWARDS:-}"; then
 fi
 qemu_netdev=$QEMU_PORT_FORWARDING_NETDEV
 port_forwarding_summary=$QEMU_PORT_FORWARDING_SUMMARY
+if [[ -n ${TRY_OMARCHY_BRIDGE_MODE:-} ]]; then
+  # socket_vmnet_client hands QEMU an already-open vmnet-bridged file
+  # descriptor at fd 3, so QEMU itself never needs elevated privileges and
+  # stays a normal child process (PID tracking, QMP, and signal handling
+  # below are unaffected). Port forwarding rules are meaningless in bridged
+  # mode since the guest gets its own routable LAN address, so any
+  # configured hostfwd rules are intentionally discarded here.
+  qemu_netdev='socket,id=omarchy-net,fd=3'
+  port_forwarding_summary='disabled (bridged networking active)'
+fi
 ssh_kernel_argument=''
 if ((QEMU_PORT_FORWARDING_ENABLES_SSH)); then
   ssh_kernel_argument=' tryomarchy.ssh_access=1'
@@ -1398,7 +1414,18 @@ if [[ -n $shared_folder ]]; then
   echo "[qemu-gpu] Shared folder: $shared_folder (guest ~/$shared_folder_name)" >&2
 fi
 echo "[qemu-gpu] Port forwarding: $port_forwarding_summary" >&2
-"$qemu_bin" "${qemu_args[@]}" &
+if [[ -n ${TRY_OMARCHY_BRIDGE_MODE:-} ]]; then
+  socket_vmnet_client_bin=${TRY_OMARCHY_VMNET_CLIENT:-/opt/homebrew/opt/socket_vmnet/bin/socket_vmnet_client}
+  socket_vmnet_socket=${TRY_OMARCHY_VMNET_SOCKET:-/opt/homebrew/var/run/socket_vmnet.bridged.en0}
+  [[ -x $socket_vmnet_client_bin ]] || \
+    fail "socket_vmnet_client not found at $socket_vmnet_client_bin (install socket_vmnet or set TRY_OMARCHY_VMNET_CLIENT)"
+  [[ -S $socket_vmnet_socket ]] || \
+    fail "socket_vmnet daemon socket not found at $socket_vmnet_socket (is the socket_vmnet launchd service running?)"
+  echo "[qemu-gpu] Bridged networking: via $socket_vmnet_client_bin ($socket_vmnet_socket)" >&2
+  "$socket_vmnet_client_bin" "$socket_vmnet_socket" "$qemu_bin" "${qemu_args[@]}" &
+else
+  "$qemu_bin" "${qemu_args[@]}" &
+fi
 qemu_pid=$!
 printf '%s\n' "$qemu_pid" >"$work_dir/.qemu.pid"
 chmod 600 "$work_dir/.qemu.pid"
